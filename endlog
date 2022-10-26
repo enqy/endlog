@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+import sys
+
+in_module = False
+seen_braces_module = 0
+in_match = False
+seen_braces_match = 0
+
+class Transformer:
+    in_module: bool
+    seen_braces_module: int
+
+    in_match: bool
+    seen_braces_match: int
+
+    def __init__(self):
+        self.in_module = False
+        self.seen_braces_module = 0
+        self.in_module_def = False
+
+        self.in_match = False
+        self.seen_braces_match = 0
+
+    def transform(self, line: str) -> str:
+        if not line.startswith("//"):
+            stripped_line = line.strip()
+
+            line = self.transform_semicolon(line, stripped_line)
+            line = self.transform_match(line, stripped_line)
+            line = self.transform_module(line, stripped_line)
+            line = self.transform_bits(line, stripped_line)
+            line = self.transform_block(line, stripped_line)
+            line = self.transform_concat(line, stripped_line)
+            line = self.transform_assignments(line, stripped_line)
+            line = self.transform_bitwidth(line, stripped_line)
+            line = self.transform_on(line, stripped_line)
+            line = self.transform_macros(line, stripped_line)
+
+        return line
+
+    def transform_semicolon(self, line: str, stripped_line: str) -> str:
+        if ";" not in line and stripped_line != "" and not self.in_module_def:
+            if not any(stripped_line.startswith(x) for x in ("`", "%", ".")):
+                if not any(stripped_line.endswith(x) for x in ("{", "}", ",", "(")):
+                    line = line.rstrip() + ";\n"
+
+        return line
+
+    def transform_match(self, line: str, stripped_line: str) -> str:
+        if stripped_line.startswith("match"):
+            self.in_match = True
+            line = line.replace("match", "case")
+
+        return line
+
+    def transform_module(self, line: str, stripped_line: str) -> str:
+        if stripped_line.startswith("module"):
+            self.in_module = True
+
+            if "(" in line:
+                 self.in_module_def = True
+
+        if self.in_module_def and ")" in line:
+            self.in_module_def = False
+
+        return line
+
+    def transform_bits(self, line: str, _: str) -> str:
+        if "'" in line:
+            start = line.index("'")
+            end = start + 1
+            while line[end] in "01":
+                end += 1
+            bits = line[start + 1:end]
+            line = line[:start] + str(len(bits)) + "'b" + line[start + 1:]
+
+        return line
+
+    def transform_block(self, line: str, stripped_line: str) -> str:
+        line = self.transform_block_start(line, stripped_line)
+        line = self.transform_block_end(line, stripped_line)
+
+        return line
+
+    def transform_block_start(self, line: str, _: str) -> str:
+        if "{" in line:
+            def replace_normal_block(line: str) -> str:
+                char_index = line.index("{")
+                replace = "begin"
+                if line[char_index - 1] not in " \n\t":
+                    replace = " " + replace
+                if line[char_index + 1] not in " \n\t":
+                    replace += " "
+                return line.replace("{", replace)
+
+            if self.in_match:
+                if self.seen_braces_match == 0:
+                    line = line.replace("{", "")
+                else:
+                    line = replace_normal_block(line)
+                self.seen_braces_match += 1
+            elif self.in_module:
+                if self.seen_braces_module == 0:
+                    line = line[:-3] + ";\n"
+                else:
+                    line = replace_normal_block(line)
+                self.seen_braces_module += 1
+            else:
+                line = replace_normal_block(line)
+
+        return line
+
+    def transform_block_end(self, line: str, _: str) -> str:
+        if "}" in line:
+            def replace_normal_block(line: str) -> str:
+                char_index = line.index("}")
+                replace = "end"
+                if line[char_index - 1] not in " \n\t":
+                    replace = " " + replace
+                if line[char_index + 1] not in " \n\t":
+                    replace += " "
+                return line.replace("}", replace)
+
+            if self.in_match:
+                self.seen_braces_match -= 1
+                if seen_braces_match == 0:
+                    self.in_match = False
+                    line = line.replace("}", "endcase")
+                else:
+                    line = replace_normal_block(line)
+            elif self.in_module:
+                self.seen_braces_module -= 1
+                if self.seen_braces_module == 0:
+                    self.in_module = False
+                    line = line.replace("}", "endmodule")
+                else:
+                    line = replace_normal_block(line)
+            else:
+                line = replace_normal_block(line)
+
+        return line
+
+    def transform_concat(self, line: str, _: str) -> str:
+        if all(x in line for x in ["<|", "|>"]):
+            line = line.replace("<|", "{")
+            line = line.replace("|>", "}")
+
+        return line
+
+    def transform_assignments(self, line: str, stripped_line: str) -> str:
+        line = self.transform_nonblocking_assignment(line, stripped_line)
+        line = self.transform_blocking_assignment(line, stripped_line)
+        line = self.transform_continuous_assignment(line, stripped_line)
+
+        return line
+
+    def transform_nonblocking_assignment(self, line: str, _: str) -> str:
+        if " <= " in line:
+            line = line.replace(" <= ", " <= ")
+
+        return line
+
+    def transform_blocking_assignment(self, line: str, _: str) -> str:
+        if " = " in line:
+            line = line.replace(" = ", " = ")
+
+        return line
+
+    def transform_continuous_assignment(self, line: str, _: str) -> str:
+        if " := " in line:
+            index = line.index(" := ")
+            whitespace = self.extract_whitespace(line)
+            line = whitespace + "assign " + line[len(whitespace):index] + " = " + line[index + 4:]
+
+        return line
+
+    def transform_bitwidth(self, line: str, _: str) -> str:
+        if "#" in line:
+            index = line.index("#")
+            if line[index + 1] in "0123456789":
+                end = index + 1
+                while line[end] in "0123456789":
+                    end += 1
+                count = int(line[index + 1:end])
+                line = line[:index] + f" [{count - 1}:0]" + line[end:]
+            elif line[index + 1] == " ":
+                line = line[:index] + line[index + 1:]
+
+        return line
+
+    def transform_on(self, line: str, stripped_line: str) -> str:
+        if stripped_line.startswith("on "):
+            index = line.index("on ")
+            split = line.strip().split(" ")
+            args_str = " ".join(split[1:-1]).strip("()")
+            args = [arg.strip() for arg in args_str.split(",") if arg.strip() != ""]
+            og_line = line
+
+            if len(args) == 1 and args[0].isnumeric():
+                line = line[:index] + f"always #{args[0]} " + og_line[index + len(args[0]) + 6:]
+            else:
+                line = line[:index] + "always @ ("
+                for i, arg in enumerate(args):
+                    signal, edge = arg.split("@")
+
+                    if i != 0:
+                        line += " or "
+
+                    if edge in ("posedge", "negedge"):
+                        line += edge + " " + signal
+                    else:
+                        line += signal
+                line += ") " + og_line[og_line.index(")") + 2:]
+
+        return line
+
+    def transform_macros(self, line: str, stripped_line: str) -> str:
+        if stripped_line.startswith("%"):
+            start = line.index("%")
+            end = start + 1
+            while line[end] not in "( ":
+                end += 1
+            macro = line[start + 1:end]
+            args = [arg.strip() for arg in line[end:].strip("();\n").split(",")]
+
+            if macro == "sleep":
+                line = line[:line.index("%")] + f"#{args[0]}\n"
+
+        return line
+
+    def extract_whitespace(self, line: str) -> str:
+        whitespace = ""
+        for char in line:
+            if char in " \t":
+                whitespace += char
+            else:
+                break
+        return whitespace
+
+transformer = Transformer()
+
+with open(sys.argv[1]) as fi:
+    fi_lines = fi.readlines()
+
+with open(sys.argv[2], 'w') as fo:
+    line_index = 0
+    while line_index < len(fi_lines):
+        line = fi_lines[line_index]
+        line = transformer.transform(line)
+
+        fo.write(line)
+        line_index += 1
