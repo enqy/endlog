@@ -127,7 +127,7 @@ class Transformer:
                     bitwidth_end += 1
                 bitwidth = int(line[bitwidth_start + 1:bitwidth_end])
 
-                name = stripped_line.split(" ")[1].strip(" \t\n,")
+                name = stripped_line.split(" ")[1].strip(" \n,")
 
                 state = self.lookahead_detect_io_state(name)
                 state_str = "output" if state.is_output() else "input"
@@ -166,9 +166,9 @@ class Transformer:
             def replace_normal_block(line: str) -> str:
                 char_index = line.index("{")
                 replace = "begin"
-                if line[char_index - 1] not in " \n\t":
+                if line[char_index - 1] not in " \n":
                     replace = " " + replace
-                if line[char_index + 1] not in " \n\t":
+                if line[char_index + 1] not in " \n":
                     replace += " "
                 return line.replace("{", replace)
 
@@ -199,9 +199,9 @@ class Transformer:
             def replace_normal_block(line: str) -> str:
                 char_index = line.index("}")
                 replace = "end"
-                if line[char_index - 1] not in " \n\t":
+                if line[char_index - 1] not in " \n":
                     replace = " " + replace
-                if line[char_index + 1] not in " \n\t":
+                if line[char_index + 1] not in " \n":
                     replace += " "
                 return line.replace("}", replace)
 
@@ -348,14 +348,14 @@ class Transformer:
     def extract_whitespace(self, line: str) -> str:
         whitespace = ""
         for char in line:
-            if char in " \t":
+            if char in " ":
                 whitespace += char
             else:
                 break
         return whitespace
 
     def lookahead_detect_io_state(self, io_name: str) -> IOState:
-        indices = [i for i in range(len(self.source)) if self.source.startswith(f"{io_name} ::=", i)]
+        indices = [i for i in range(len(self.source)) if self.source.startswith(f" {io_name} ::=", i) or self.source.startswith(f"\n{io_name} ::=", i)]
         limit = len(self.source) if len([i for i in range(len(self.source)) if self.source.startswith("module",  i)]) <= 1 else self.source.index("module")
         for index in indices:
             if index < limit:
