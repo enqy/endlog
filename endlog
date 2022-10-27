@@ -27,6 +27,9 @@ class Module:
 class Transformer:
     source: str
 
+    in_passthrough: bool
+    in_block_comment: bool
+
     in_module: bool
     current_module_name: str | None
     seen_braces_module: int
@@ -44,6 +47,9 @@ class Transformer:
     def __init__(self, source):
         self.source = source
 
+        self.in_passthrough = False
+        self.in_block_comment = False
+
         self.in_module = False
         self.current_module_name = None
         self.seen_braces_module = 0
@@ -60,7 +66,14 @@ class Transformer:
 
     def transform(self, line: str) -> str:
         stripped_line = line.strip()
-        if not any(stripped_line.startswith(x) for x in ("//")):
+        if stripped_line == "%-%":
+            self.in_passthrough = not self.in_passthrough
+            return ""
+
+        if stripped_line.startswith("/*"):
+            self.in_block_comment = True
+
+        if not any(stripped_line.startswith(x) for x in ("//")) and not self.in_passthrough and not self.in_block_comment:
             line = reduce(lambda line, func: func(line, stripped_line), [
                 self.transform_semicolon,
                 self.transform_match,
@@ -76,6 +89,9 @@ class Transformer:
                 self.transform_macros,
                 self.transform_const,
             ], line)
+
+        if stripped_line.endswith("*/"):
+            self.in_block_comment = False
 
         return line
 
