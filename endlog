@@ -1,40 +1,81 @@
 #!/usr/bin/env python3
+from enum import Enum
+from functools import reduce
 import sys
 
-in_module = False
-seen_braces_module = 0
-in_match = False
-seen_braces_match = 0
+class IOState(Enum):
+    Input = 0,
+    Output = 1
+
+    def is_input(self):
+        return self == IOState.Input
+
+    def is_output(self):
+        return self == IOState.Output
+
+
+class Module:
+    io: dict[str, tuple[int, IOState]]
+
+    def __init__(self):
+        self.io = {}
+
+    def add_io(self, name: str, width: int, state: IOState):
+        self.io[name] = (width, state)
+
 
 class Transformer:
+    source: str
+
     in_module: bool
+    current_module_name: str | None
     seen_braces_module: int
+    in_module_def: bool
 
     in_match: bool
     seen_braces_match: int
 
-    def __init__(self):
+    in_on: bool
+    seen_braces_on: int
+
+    consts: dict[str, str]
+    modules: dict[str, Module]
+
+    def __init__(self, source):
+        self.source = source
+
         self.in_module = False
+        self.current_module_name = None
         self.seen_braces_module = 0
         self.in_module_def = False
 
         self.in_match = False
         self.seen_braces_match = 0
 
-    def transform(self, line: str) -> str:
-        if not line.startswith("//"):
-            stripped_line = line.strip()
+        self.in_on = False
+        self.seen_braces_on = 0
 
-            line = self.transform_semicolon(line, stripped_line)
-            line = self.transform_match(line, stripped_line)
-            line = self.transform_module(line, stripped_line)
-            line = self.transform_bits(line, stripped_line)
-            line = self.transform_block(line, stripped_line)
-            line = self.transform_concat(line, stripped_line)
-            line = self.transform_assignments(line, stripped_line)
-            line = self.transform_bitwidth(line, stripped_line)
-            line = self.transform_on(line, stripped_line)
-            line = self.transform_macros(line, stripped_line)
+        self.consts = {}
+        self.modules = {}
+
+    def transform(self, line: str) -> str:
+        stripped_line = line.strip()
+        if not any(stripped_line.startswith(x) for x in ("//")):
+            line = reduce(lambda line, func: func(line, stripped_line), [
+                self.transform_semicolon,
+                self.transform_match,
+                self.transform_par,
+                self.transform_module,
+                self.transform_module_def,
+                self.transform_bits,
+                self.transform_block,
+                self.transform_concat,
+                self.transform_assignments,
+                self.transform_bitwidth,
+                self.transform_on,
+                self.transform_macros,
+                self.transform_const,
+            ], line)
 
         return line
 
@@ -53,9 +94,19 @@ class Transformer:
 
         return line
 
+    def transform_par(self, line: str, stripped_line: str) -> str:
+        if stripped_line.startswith("par"):
+            line = line.replace("par", "parameter")
+
+        return line
+
     def transform_module(self, line: str, stripped_line: str) -> str:
         if stripped_line.startswith("module"):
             self.in_module = True
+
+            module_name = stripped_line.split(" ")[1]
+            self.modules[module_name] = Module()
+            self.current_module_name = module_name
 
             if "(" in line:
                  self.in_module_def = True
@@ -65,14 +116,42 @@ class Transformer:
 
         return line
 
+    def transform_module_def(self, line: str, stripped_line: str) -> str:
+        if self.in_module and self.in_module_def and not stripped_line.startswith("module"):
+            if not stripped_line.startswith("input") and not stripped_line.startswith("output"):
+                bitwidth_start = line.find("#")
+                if bitwidth_start == -1:
+                    raise Exception("No bitwidth found in module definition")
+                bitwidth_end = bitwidth_start + 1
+                while line[bitwidth_end] in "0123456789":
+                    bitwidth_end += 1
+                bitwidth = int(line[bitwidth_start + 1:bitwidth_end])
+
+                name = stripped_line.split(" ")[1].strip(" \t\n,")
+
+                state = self.lookahead_detect_io_state(name)
+                state_str = "output" if state.is_output() else "input"
+
+                whitespace = self.extract_whitespace(line)
+                line = whitespace + f"{state_str} wire [{bitwidth - 1}:0]" + line[bitwidth_end:]
+
+                assert(self.current_module_name is not None)
+                self.modules[self.current_module_name].add_io(name, bitwidth, state)
+
+        return line
+
     def transform_bits(self, line: str, _: str) -> str:
         if "'" in line:
-            start = line.index("'")
-            end = start + 1
-            while line[end] in "01":
-                end += 1
-            bits = line[start + 1:end]
-            line = line[:start] + str(len(bits)) + "'b" + line[start + 1:]
+            indices = [i for i, x in enumerate(line) if x == "'"]
+            offset = 0
+            for start in indices:
+                start = start + offset
+                end = start + 1
+                while line[end] in "01":
+                    end += 1
+                bits = line[start + 1:end]
+                line = line[:start] + str(len(bits)) + "'b" + line[start + 1:]
+                offset += len(str(len(bits))) + 1
 
         return line
 
@@ -93,19 +172,24 @@ class Transformer:
                     replace += " "
                 return line.replace("{", replace)
 
+            special_replace = False
             if self.in_match:
                 if self.seen_braces_match == 0:
                     line = line.replace("{", "")
-                else:
-                    line = replace_normal_block(line)
+                    special_replace = True
                 self.seen_braces_match += 1
-            elif self.in_module:
+            if self.in_on:
+                if self.seen_braces_on == 0:
+                    line = line.replace("{", "begin")
+                    special_replace = True
+                self.seen_braces_on += 1
+            if self.in_module:
                 if self.seen_braces_module == 0:
                     line = line[:-3] + ";\n"
-                else:
-                    line = replace_normal_block(line)
+                    special_replace = True
                 self.seen_braces_module += 1
-            else:
+
+            if not special_replace:
                 line = replace_normal_block(line)
 
         return line
@@ -121,21 +205,27 @@ class Transformer:
                     replace += " "
                 return line.replace("}", replace)
 
+            special_replace = False
             if self.in_match:
                 self.seen_braces_match -= 1
-                if seen_braces_match == 0:
+                if self.seen_braces_match == 0:
                     self.in_match = False
                     line = line.replace("}", "endcase")
-                else:
-                    line = replace_normal_block(line)
-            elif self.in_module:
+                    special_replace = True
+            if self.in_on:
+                self.seen_braces_on -= 1
+                if self.seen_braces_on == 0:
+                    self.in_on = False
+                    line = line.replace("}", "end")
+                    special_replace = True
+            if self.in_module:
                 self.seen_braces_module -= 1
                 if self.seen_braces_module == 0:
                     self.in_module = False
                     line = line.replace("}", "endmodule")
-                else:
-                    line = replace_normal_block(line)
-            else:
+                    special_replace = True
+
+            if not special_replace:
                 line = replace_normal_block(line)
 
         return line
@@ -151,6 +241,7 @@ class Transformer:
         line = self.transform_nonblocking_assignment(line, stripped_line)
         line = self.transform_blocking_assignment(line, stripped_line)
         line = self.transform_continuous_assignment(line, stripped_line)
+        line = self.transform_output_assignments(line, stripped_line)
 
         return line
 
@@ -174,6 +265,14 @@ class Transformer:
 
         return line
 
+    def transform_output_assignments(self, line: str, _: str) -> str:
+        if " ::= " in line:
+            index = line.index(" ::= ")
+            whitespace = self.extract_whitespace(line)
+            line = whitespace + "assign " + line[len(whitespace):index] + " = " + line[index + 5:]
+
+        return line
+
     def transform_bitwidth(self, line: str, _: str) -> str:
         if "#" in line:
             index = line.index("#")
@@ -181,8 +280,8 @@ class Transformer:
                 end = index + 1
                 while line[end] in "0123456789":
                     end += 1
-                count = int(line[index + 1:end])
-                line = line[:index] + f" [{count - 1}:0]" + line[end:]
+                width = int(line[index + 1:end])
+                line = line[:index] + f" [{width - 1}:0]" + line[end:]
             elif line[index + 1] == " ":
                 line = line[:index] + line[index + 1:]
 
@@ -212,19 +311,37 @@ class Transformer:
                         line += signal
                 line += ") " + og_line[og_line.index(")") + 2:]
 
+            if stripped_line.endswith("{"):
+                self.in_on = True
+
         return line
 
     def transform_macros(self, line: str, stripped_line: str) -> str:
-        if stripped_line.startswith("%"):
-            start = line.index("%")
-            end = start + 1
+        if stripped_line.startswith("%!"):
+            start = line.index("%!")
+            end = start + 2
             while line[end] not in "( ":
                 end += 1
-            macro = line[start + 1:end]
+            macro = line[start + 2:end]
             args = [arg.strip() for arg in line[end:].strip("();\n").split(",")]
 
             if macro == "sleep":
-                line = line[:line.index("%")] + f"#{args[0]}\n"
+                line = line[:line.index("%!")] + f"#{args[0]}\n"
+
+        return line
+
+    def transform_const(self, line: str, stripped_line: str) -> str:
+        if "%%" in line:
+            if stripped_line.startswith("%%") and " = " in stripped_line:
+                split = stripped_line.split(" = ")
+                self.consts[split[0][2:].strip()] = split[1].strip()
+                line = ""
+            else:
+                start = line.index("%%")
+                end = start + 2
+                while line[end].isalpha():
+                    end += 1
+                line = line[:start] + self.consts[line[start + 2:end]] + line[end:]
 
         return line
 
@@ -237,16 +354,32 @@ class Transformer:
                 break
         return whitespace
 
-transformer = Transformer()
+    def lookahead_detect_io_state(self, io_name: str) -> IOState:
+        indices = [i for i in range(len(self.source)) if self.source.startswith(f"{io_name} ::=", i)]
+        limit = len(self.source) if len([i for i in range(len(self.source)) if self.source.startswith("module",  i)]) <= 1 else self.source.index("module")
+        for index in indices:
+            if index < limit:
+                return IOState.Output
+        return IOState.Input
 
-with open(sys.argv[1]) as fi:
-    fi_lines = fi.readlines()
 
-with open(sys.argv[2], 'w') as fo:
-    line_index = 0
-    while line_index < len(fi_lines):
-        line = fi_lines[line_index]
-        line = transformer.transform(line)
+def main():
+    with open(sys.argv[1]) as fi:
+        fi_lines = fi.readlines()
+        fi.seek(0)
+        source = fi.read()
 
-        fo.write(line)
-        line_index += 1
+    transformer = Transformer(source)
+
+    with open(sys.argv[2], 'w') as fo:
+        line_index = 0
+        while line_index < len(fi_lines):
+            line = fi_lines[line_index]
+            line = transformer.transform(line)
+
+            fo.write(line)
+            line_index += 1
+
+
+if __name__ == "__main__":
+    main()
