@@ -16,13 +16,27 @@ class IOState(Enum):
 
 class Module:
     io: dict[str, tuple[int, IOState]]
+    wires: dict[str, int]
+    registers: dict[str, int]
+    parameters: list[str]
 
     def __init__(self):
         self.io = {}
+        self.wires = {}
+        self.registers = {}
+        self.parameters = []
 
-    def add_io(self, name: str, width: int, state: IOState):
+    def add_io(self, name: str, width: int, state: IOState) -> None:
         self.io[name] = (width, state)
 
+    def add_wire(self, name: str, width: int) -> None:
+        self.wires[name] = width
+
+    def add_register(self, name: str, width: int) -> None:
+        self.registers[name] = width
+
+    def add_parameter(self, name: str) -> None:
+        self.parameters.append(name)
 
 class Transformer:
     source: str
@@ -121,6 +135,8 @@ class Transformer:
             self.in_module = True
 
             module_name = stripped_line.split(" ")[1]
+            if self.check_name_collision(module_name):
+                raise Exception(f"`{module_name}` collides with an already existing name")
             self.modules[module_name] = Module()
             self.current_module_name = module_name
 
@@ -144,6 +160,8 @@ class Transformer:
                 bitwidth = int(line[bitwidth_start + 1:bitwidth_end])
 
                 name = stripped_line.split(" ")[1].strip(" \n,")
+                if self.check_name_collision(name):
+                    raise Exception(f"`{name}` collides with an already existing name")
 
                 state = self.lookahead_detect_io_state(name)
                 state_str = "output" if state.is_output() else "input"
@@ -261,31 +279,89 @@ class Transformer:
 
         return line
 
-    def transform_nonblocking_assignment(self, line: str, _: str) -> str:
-        if " <= " in line:
-            line = line.replace(" <= ", " <= ")
+    def transform_nonblocking_assignment(self, line: str, stripped_line: str) -> str:
+        if " <- " in line:
+            index = line.index(" <- ")
+
+            name = line[:index].strip()
+            if not self.check_name_collision(name):
+                raise Exception(f"`{name}` is not defined")
+
+            whitespace = self.extract_whitespace(line)
+            line = whitespace + name + " <= " + line[index + 4:]
+        elif " -> " in line:
+            index = stripped_line.index(" -> ")
+
+            name = stripped_line[index + 4:]
+            if not self.check_name_collision(name):
+                raise Exception(f"`{name}` is not defined")
+
+            whitespace = self.extract_whitespace(line)
+            # need to add semicolon and newline because this runs after those transforms
+            line = whitespace + name + " <= " + stripped_line[:index] + ";\n"
 
         return line
 
-    def transform_blocking_assignment(self, line: str, _: str) -> str:
+    def transform_blocking_assignment(self, line: str, stripped_line: str) -> str:
         if " = " in line:
-            line = line.replace(" = ", " = ")
+            index = line.index(" = ")
+
+            if any(stripped_line.startswith(x) for x in ("par", "reg", "wire")):
+                name = stripped_line.split(" ")[1].strip()
+                if self.check_name_collision(name):
+                    raise Exception(f"`{name}` collides with an already existing name")
+
+                match stripped_line.split(" ")[0].split("#")[0]:
+                    case "par":
+                        assert(self.current_module_name is not None)
+                        self.modules[self.current_module_name].add_parameter(name)
+                    case "reg":
+                        assert(self.current_module_name is not None)
+                        width = stripped_line.split(" ")[0].split("#")[1]
+                        self.modules[self.current_module_name].add_register(name, int(width))
+                    case "wire":
+                        assert(self.current_module_name is not None)
+                        width = stripped_line.split(" ")[0].split("#")[1]
+                        self.modules[self.current_module_name].add_wire(name, int(width))
+            else:
+                name = stripped_line.split(" ")[0].strip()
+                if not self.check_name_collision(name):
+                    raise Exception(f"`{name}` is not defined")
+
+            whitespace = self.extract_whitespace(line)
+            line = whitespace + line[len(whitespace):index] + " = " + line[index + 3:]
 
         return line
 
     def transform_continuous_assignment(self, line: str, _: str) -> str:
         if " := " in line:
             index = line.index(" := ")
+
+            name = line[:index].strip()
+            if (existing := self.check_name_collision(name)) is not None:
+                if existing[0] != "wire":
+                    raise Exception(f"`{name}` is not of type wire")
+            else:
+                raise Exception(f"`{name}` is not defined")
+
             whitespace = self.extract_whitespace(line)
-            line = whitespace + "assign " + line[len(whitespace):index] + " = " + line[index + 4:]
+            line = whitespace + "assign " + name + " = " + line[index + 4:]
 
         return line
 
     def transform_output_assignments(self, line: str, _: str) -> str:
         if " ::= " in line:
             index = line.index(" ::= ")
+
+            name = line[:index].strip()
+            if (existing := self.check_name_collision(name)) is not None:
+                if existing[0] != "wire":
+                    raise Exception(f"`{name}` is not of type wire")
+            else:
+                raise Exception(f"`{name}` is not defined")
+
             whitespace = self.extract_whitespace(line)
-            line = whitespace + "assign " + line[len(whitespace):index] + " = " + line[index + 5:]
+            line = whitespace + "assign " + name + " = " + line[index + 5:]
 
         return line
 
@@ -378,6 +454,27 @@ class Transformer:
                 return IOState.Output
         return IOState.Input
 
+    def check_name_collision(self, name: str) -> tuple[str, int] | None:
+        # check const names
+        if name in self.consts:
+            return ("const", 0)
+
+        # check modules
+        for module_name, module in self.modules.items():
+            if name == module_name:
+                return "module", 0
+
+            if name in module.io:
+                return "wire", module.io[name][0]
+
+            if name in module.wires:
+                return "wire", module.wires[name]
+
+            if name in module.registers:
+                return "reg", module.registers[name]
+
+        return None
+
 
 def main():
     with open(sys.argv[1]) as fi:
@@ -395,6 +492,9 @@ def main():
 
             fo.write(line)
             line_index += 1
+
+    import subprocess
+    subprocess.run(["iverilog", "-tnull", sys.argv[2]])
 
 
 if __name__ == "__main__":
