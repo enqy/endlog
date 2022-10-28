@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 from enum import Enum
-from functools import reduce
 import sys
+from functools import reduce
+
 
 class IOState(Enum):
-    Input = 0,
+    Input = (0,)
     Output = 1
 
     def is_input(self):
@@ -37,6 +38,7 @@ class Module:
 
     def add_parameter(self, name: str) -> None:
         self.parameters.append(name)
+
 
 class Transformer:
     source: str
@@ -78,6 +80,26 @@ class Transformer:
         self.consts = {}
         self.modules = {}
 
+    def pretransform(self) -> str:
+        lines = self.source.splitlines(keepends=True)
+        r_lns = [i for i, x in enumerate(lines) if x.strip().startswith("%-=")]
+
+        r_lnrs = [
+            (int(lines[r_lns[i]].strip()[3:]), (r_lns[i], r_lns[i + 1]))
+            for i in range(0, len(r_lns), 2)
+        ]
+
+        new_lines: list[str] = lines[: r_lnrs[0][1][0] if r_lnrs else len(lines)]
+        for i in range(len(r_lnrs)):
+            n, (start, end) = r_lnrs[i]
+            next_start = r_lnrs[i + 1][1][0] if i + 1 < len(r_lnrs) else len(lines)
+            block = "".join(lines[start + 1 : end])
+            new_lines.append("".join(block.replace(r"%i%", str(i)) for i in range(n)))
+            new_lines += lines[end + 1 : next_start]
+
+        self.source = "".join(new_lines)
+        return self.source
+
     def transform(self, line: str) -> str:
         stripped_line = line.strip()
         if stripped_line == "%-%":
@@ -87,22 +109,30 @@ class Transformer:
         if stripped_line.startswith("/*"):
             self.in_block_comment = True
 
-        if not any(stripped_line.startswith(x) for x in ("//")) and not self.in_passthrough and not self.in_block_comment:
-            line = reduce(lambda line, func: func(line, stripped_line), [
-                self.transform_semicolon,
-                self.transform_match,
-                self.transform_par,
-                self.transform_module,
-                self.transform_module_def,
-                self.transform_bits,
-                self.transform_block,
-                self.transform_concat,
-                self.transform_assignments,
-                self.transform_bitwidth,
-                self.transform_on,
-                self.transform_macros,
-                self.transform_const,
-            ], line)
+        if (
+            not any(stripped_line.startswith(x) for x in ("//"))
+            and not self.in_passthrough
+            and not self.in_block_comment
+        ):
+            line = reduce(
+                lambda line, func: func(line, stripped_line),
+                [
+                    self.transform_semicolon,
+                    self.transform_match,
+                    self.transform_par,
+                    self.transform_module,
+                    self.transform_module_def,
+                    self.transform_bits,
+                    self.transform_block,
+                    self.transform_concat,
+                    self.transform_assignments,
+                    self.transform_bitwidth,
+                    self.transform_on,
+                    self.transform_macros,
+                    self.transform_const,
+                ],
+                line,
+            )
 
         if stripped_line.endswith("*/"):
             self.in_block_comment = False
@@ -136,12 +166,14 @@ class Transformer:
 
             module_name = stripped_line.split(" ")[1]
             if self.check_name_collision(module_name):
-                raise Exception(f"`{module_name}` collides with an already existing name")
+                raise Exception(
+                    f"`{module_name}` collides with an already existing module name"
+                )
             self.modules[module_name] = Module()
             self.current_module_name = module_name
 
             if "(" in line:
-                 self.in_module_def = True
+                self.in_module_def = True
 
         if self.in_module_def and ")" in line:
             self.in_module_def = False
@@ -149,15 +181,21 @@ class Transformer:
         return line
 
     def transform_module_def(self, line: str, stripped_line: str) -> str:
-        if self.in_module and self.in_module_def and not stripped_line.startswith("module"):
-            if not stripped_line.startswith("input") and not stripped_line.startswith("output"):
+        if (
+            self.in_module
+            and self.in_module_def
+            and not stripped_line.startswith("module")
+        ):
+            if not stripped_line.startswith("input") and not stripped_line.startswith(
+                "output"
+            ):
                 bitwidth_start = line.find("#")
                 if bitwidth_start == -1:
                     raise Exception("No bitwidth found in module definition")
                 bitwidth_end = bitwidth_start + 1
                 while line[bitwidth_end] in "0123456789":
                     bitwidth_end += 1
-                bitwidth = int(line[bitwidth_start + 1:bitwidth_end])
+                bitwidth = int(line[bitwidth_start + 1 : bitwidth_end])
 
                 name = stripped_line.split(" ")[1].strip(" \n,")
                 if self.check_name_collision(name):
@@ -167,9 +205,13 @@ class Transformer:
                 state_str = "output" if state.is_output() else "input"
 
                 whitespace = self.extract_whitespace(line)
-                line = whitespace + f"{state_str} wire [{bitwidth - 1}:0]" + line[bitwidth_end:]
+                line = (
+                    whitespace
+                    + f"{state_str} wire [{bitwidth - 1}:0]"
+                    + line[bitwidth_end:]
+                )
 
-                assert(self.current_module_name is not None)
+                assert self.current_module_name is not None
                 self.modules[self.current_module_name].add_io(name, bitwidth, state)
 
         return line
@@ -183,8 +225,8 @@ class Transformer:
                 end = start + 1
                 while line[end] in "01":
                     end += 1
-                bits = line[start + 1:end]
-                line = line[:start] + str(len(bits)) + "'b" + line[start + 1:]
+                bits = line[start + 1 : end]
+                line = line[:start] + str(len(bits)) + "'b" + line[start + 1 :]
                 offset += len(str(len(bits))) + 1
 
         return line
@@ -197,6 +239,7 @@ class Transformer:
 
     def transform_block_start(self, line: str, _: str) -> str:
         if "{" in line:
+
             def replace_normal_block(line: str) -> str:
                 char_index = line.index("{")
                 replace = "begin"
@@ -230,6 +273,7 @@ class Transformer:
 
     def transform_block_end(self, line: str, _: str) -> str:
         if "}" in line:
+
             def replace_normal_block(line: str) -> str:
                 char_index = line.index("}")
                 replace = "end"
@@ -288,11 +332,11 @@ class Transformer:
                 raise Exception(f"`{name}` is not defined")
 
             whitespace = self.extract_whitespace(line)
-            line = whitespace + name + " <= " + line[index + 4:]
+            line = whitespace + name + " <= " + line[index + 4 :]
         elif " -> " in line:
             index = stripped_line.index(" -> ")
 
-            name = stripped_line[index + 4:]
+            name = stripped_line[index + 4 :]
             if not self.check_name_collision(name):
                 raise Exception(f"`{name}` is not defined")
 
@@ -313,23 +357,29 @@ class Transformer:
 
                 match stripped_line.split(" ")[0].split("#")[0]:
                     case "par":
-                        assert(self.current_module_name is not None)
+                        assert self.current_module_name is not None
                         self.modules[self.current_module_name].add_parameter(name)
                     case "reg":
-                        assert(self.current_module_name is not None)
+                        assert self.current_module_name is not None
                         width = stripped_line.split(" ")[0].split("#")[1]
-                        self.modules[self.current_module_name].add_register(name, int(width))
+                        self.modules[self.current_module_name].add_register(
+                            name, int(width)
+                        )
                     case "wire":
-                        assert(self.current_module_name is not None)
+                        assert self.current_module_name is not None
                         width = stripped_line.split(" ")[0].split("#")[1]
-                        self.modules[self.current_module_name].add_wire(name, int(width))
+                        self.modules[self.current_module_name].add_wire(
+                            name, int(width)
+                        )
             else:
                 name = stripped_line.split(" ")[0].strip()
                 if not self.check_name_collision(name):
                     raise Exception(f"`{name}` is not defined")
 
             whitespace = self.extract_whitespace(line)
-            line = whitespace + line[len(whitespace):index] + " = " + line[index + 3:]
+            line = (
+                whitespace + line[len(whitespace) : index] + " = " + line[index + 3 :]
+            )
 
         return line
 
@@ -345,7 +395,7 @@ class Transformer:
                 raise Exception(f"`{name}` is not defined")
 
             whitespace = self.extract_whitespace(line)
-            line = whitespace + "assign " + name + " = " + line[index + 4:]
+            line = whitespace + "assign " + name + " = " + line[index + 4 :]
 
         return line
 
@@ -361,7 +411,7 @@ class Transformer:
                 raise Exception(f"`{name}` is not defined")
 
             whitespace = self.extract_whitespace(line)
-            line = whitespace + "assign " + name + " = " + line[index + 5:]
+            line = whitespace + "assign " + name + " = " + line[index + 5 :]
 
         return line
 
@@ -372,10 +422,10 @@ class Transformer:
                 end = index + 1
                 while line[end] in "0123456789":
                     end += 1
-                width = int(line[index + 1:end])
+                width = int(line[index + 1 : end])
                 line = line[:index] + f" [{width - 1}:0]" + line[end:]
             elif line[index + 1] == " ":
-                line = line[:index] + line[index + 1:]
+                line = line[:index] + line[index + 1 :]
 
         return line
 
@@ -388,7 +438,11 @@ class Transformer:
             og_line = line
 
             if len(args) == 1 and args[0].isnumeric():
-                line = line[:index] + f"always #{args[0]} " + og_line[index + len(args[0]) + 6:]
+                line = (
+                    line[:index]
+                    + f"always #{args[0]} "
+                    + og_line[index + len(args[0]) + 6 :]
+                )
             else:
                 line = line[:index] + "always @ ("
                 for i, arg in enumerate(args):
@@ -403,7 +457,7 @@ class Transformer:
                         line += edge + " " + signal
                     else:
                         line += signal
-                line += ") " + og_line[og_line.index(")") + 2:]
+                line += ") " + og_line[og_line.index(")") + 2 :]
 
             if stripped_line.endswith("{"):
                 self.in_on = True
@@ -416,11 +470,11 @@ class Transformer:
             end = start + 2
             while line[end] not in "( ":
                 end += 1
-            macro = line[start + 2:end]
+            macro = line[start + 2 : end]
             args = [arg.strip() for arg in line[end:].strip("();\n").split(",")]
 
             if macro == "sleep":
-                line = line[:line.index("%!")] + f"#{args[0]}\n"
+                line = line[: line.index("%!")] + f"#{args[0]}\n"
 
         return line
 
@@ -435,22 +489,38 @@ class Transformer:
                 end = start + 2
                 while line[end].isalpha():
                     end += 1
-                line = line[:start] + self.consts[line[start + 2:end]] + line[end:]
+                line = line[:start] + self.consts[line[start + 2 : end]] + line[end:]
 
         return line
 
     def extract_whitespace(self, line: str) -> str:
         whitespace = ""
         for char in line:
-            if char in " ":
+            if char == " ":
                 whitespace += char
             else:
                 break
         return whitespace
 
     def lookahead_detect_io_state(self, io_name: str) -> IOState:
-        indices = [i for i in range(len(self.source)) if self.source.startswith(f" {io_name} ::=", i) or self.source.startswith(f"\n{io_name} ::=", i)]
-        limit = len(self.source) if len([i for i in range(len(self.source)) if self.source.startswith("module",  i)]) <= 1 else self.source.index("module")
+        indices = [
+            i
+            for i in range(len(self.source))
+            if self.source.startswith(f" {io_name} ::=", i)
+            or self.source.startswith(f"\n{io_name} ::=", i)
+        ]
+        limit = (
+            len(self.source)
+            if len(
+                [
+                    i
+                    for i in range(len(self.source))
+                    if self.source.startswith("module", i)
+                ]
+            )
+            <= 1
+            else self.source.index("module")
+        )
         for index in indices:
             if index < limit:
                 return IOState.Output
@@ -461,17 +531,23 @@ class Transformer:
         if name in self.consts:
             return ("const", 0)
 
-        # check modules
-        for module_name, module in self.modules.items():
+        # check module names
+        for module_name in self.modules.keys():
             if name == module_name:
                 return "module", 0
 
+        if self.current_module_name:
+            module = self.modules[self.current_module_name]
+
+            # check io names
             if name in module.io:
                 return "wire", module.io[name][0]
 
+            # check wire names
             if name in module.wires:
                 return "wire", module.wires[name]
 
+            # check register names
             if name in module.registers:
                 return "reg", module.registers[name]
 
@@ -480,13 +556,13 @@ class Transformer:
 
 def main():
     with open(sys.argv[1]) as fi:
-        fi_lines = fi.readlines()
-        fi.seek(0)
         source = fi.read()
 
     transformer = Transformer(source)
+    transformer.pretransform()
+    fi_lines = list(map(lambda line: line + "\n", transformer.source.split("\n")))
 
-    with open(sys.argv[2], 'w') as fo:
+    with open(sys.argv[2], "w") as fo:
         line_index = 0
         while line_index < len(fi_lines):
             line = fi_lines[line_index]
@@ -494,9 +570,6 @@ def main():
 
             fo.write(line)
             line_index += 1
-
-    import subprocess
-    subprocess.run(["iverilog", "-tnull", sys.argv[2]])
 
 
 if __name__ == "__main__":
