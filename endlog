@@ -393,6 +393,8 @@ class Transformer:
                 line = line[:index] + "always @ ("
                 for i, arg in enumerate(args):
                     signal, edge = arg.split("@")
+                    if not self.check_name_collision(signal):
+                        raise Exception(f"`{signal}` is not defined")
 
                     if i != 0:
                         line += " or "
