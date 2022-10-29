@@ -81,26 +81,43 @@ class Transformer:
         self.modules = {}
 
     def pretransform(self) -> str:
-        lines = self.source.splitlines(keepends=True)
+        """
+        Transforms the source code before the actual transformation.
+        Applies transformations that require the whole source code to be available.
+        """
+        og_lines = self.source.splitlines(keepends=True)
+        lines = []
+        for i in range(len(og_lines)):
+            line = og_lines[i]
+            transformed_line = self.transform_const(line, line.strip())
+            if transformed_line.strip() != "" or transformed_line == line:
+                lines.append(transformed_line)
+
         r_lns = [i for i, x in enumerate(lines) if x.strip().startswith("%-=")]
+        if len(r_lns) % 2 != 0:
+            raise Exception("Unmatched %-= in source file")
 
         r_lnrs = [
-            (int(lines[r_lns[i]].strip()[3:]), (r_lns[i], r_lns[i + 1]))
+            (lines[r_lns[i]].strip()[3:], (r_lns[i], r_lns[i + 1]))
             for i in range(0, len(r_lns), 2)
         ]
 
         new_lines: list[str] = lines[: r_lnrs[0][1][0] if r_lnrs else len(lines)]
         for i in range(len(r_lnrs)):
-            n, (start, end) = r_lnrs[i]
+            expr, (start, end) = r_lnrs[i]
             next_start = r_lnrs[i + 1][1][0] if i + 1 < len(r_lnrs) else len(lines)
             block = "".join(lines[start + 1 : end])
-            new_lines.append("".join(block.replace(r"%i%", str(i)) for i in range(n)))
+            new_lines.append("".join(block.replace(r"%i%", str(i)) for i in eval(expr)))
             new_lines += lines[end + 1 : next_start]
 
-        self.source = "".join(new_lines)
+        self.source = "".join(new_lines).strip()
         return self.source
 
     def transform(self, line: str) -> str:
+        """
+        Transforms the source code.
+        Applies transformations line by line
+        """
         stripped_line = line.strip()
         if stripped_line == "%-%":
             self.in_passthrough = not self.in_passthrough
@@ -129,7 +146,6 @@ class Transformer:
                     self.transform_bitwidth,
                     self.transform_on,
                     self.transform_macros,
-                    self.transform_const,
                 ],
                 line,
             )
@@ -213,6 +229,11 @@ class Transformer:
 
                 assert self.current_module_name is not None
                 self.modules[self.current_module_name].add_io(name, bitwidth, state)
+
+                # check if this is the last line of the module definition
+                index = self.source.index("\n", self.source.index(name))
+                if self.source[index + 1 :].strip().startswith(")"):
+                    line = line.rstrip(" \n,") + "\n"
 
         return line
 
