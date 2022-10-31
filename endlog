@@ -89,10 +89,11 @@ class Transformer:
         lines = []
         for i in range(len(og_lines)):
             line = og_lines[i]
-            transformed_line = self.transform_const(line, line.strip())
+            transformed_line = self.pretransform_const(line, line.strip())
             if transformed_line.strip() != "" or transformed_line == line:
                 lines.append(transformed_line)
 
+        # loop expansion macro
         r_lns = [i for i, x in enumerate(lines) if x.strip().startswith("%-=")]
         if len(r_lns) % 2 != 0:
             raise Exception("Unmatched %-= in source file")
@@ -112,6 +113,21 @@ class Transformer:
 
         self.source = "".join(new_lines).strip()
         return self.source
+
+    def pretransform_const(self, line: str, stripped_line: str) -> str:
+        if "%%" in line:
+            if stripped_line.startswith("%%") and " = " in stripped_line:
+                split = stripped_line.split(" = ")
+                self.consts[split[0][2:].strip()] = split[1].strip()
+                line = ""
+            else:
+                start = line.index("%%")
+                end = start + 2
+                while line[end].isalpha():
+                    end += 1
+                line = line[:start] + self.consts[line[start + 2 : end]] + line[end:]
+
+        return line
 
     def transform(self, line: str) -> str:
         """
@@ -499,21 +515,6 @@ class Transformer:
 
         return line
 
-    def transform_const(self, line: str, stripped_line: str) -> str:
-        if "%%" in line:
-            if stripped_line.startswith("%%") and " = " in stripped_line:
-                split = stripped_line.split(" = ")
-                self.consts[split[0][2:].strip()] = split[1].strip()
-                line = ""
-            else:
-                start = line.index("%%")
-                end = start + 2
-                while line[end].isalpha():
-                    end += 1
-                line = line[:start] + self.consts[line[start + 2 : end]] + line[end:]
-
-        return line
-
     def extract_whitespace(self, line: str) -> str:
         whitespace = ""
         for char in line:
@@ -591,6 +592,9 @@ def main():
 
             fo.write(line)
             line_index += 1
+
+    import subprocess
+    subprocess.run(["iverilog", "-tnull", sys.argv[2]])
 
 
 if __name__ == "__main__":
