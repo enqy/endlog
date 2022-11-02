@@ -1,0 +1,25 @@
+%%cores = ["A", "B", "C"]
+%=long = "a" * 10000
+
+%-=i
+module core%i%(
+    #1 clk,
+    #1 led%=long,
+) {
+    par div%=long = 12500
+    reg#32 count%=long = 0
+    reg#1 toggle%=long = '0
+
+    on (clk@posedge) {
+        if (count%=long == div%=long - 1) {
+            toggle%=long <- !toggle%=long
+            0 -> count%=long
+        } else {
+            count%=long + 1 -> count%=long
+        }
+    }
+
+    led%=long ::= toggle%=long
+}
+
+%-=%%cores
