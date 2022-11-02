@@ -99,16 +99,21 @@ class Transformer:
             raise Exception("Unmatched %-= in source file")
 
         r_lnrs = [
-            (lines[r_lns[i]].strip()[3:], (r_lns[i], r_lns[i + 1]))
+            (
+                (lines[r_lns[i]].strip()[3:], lines[r_lns[i + 1]].strip()[3:]),
+                (r_lns[i], r_lns[i + 1]),
+            )
             for i in range(0, len(r_lns), 2)
         ]
 
         new_lines: list[str] = lines[: r_lnrs[0][1][0] if r_lnrs else len(lines)]
         for i in range(len(r_lnrs)):
-            expr, (start, end) = r_lnrs[i]
+            (placeholder, expr), (start, end) = r_lnrs[i]
             next_start = r_lnrs[i + 1][1][0] if i + 1 < len(r_lnrs) else len(lines)
             block = "".join(lines[start + 1 : end])
-            new_lines.append("".join(block.replace(r"%i%", str(i)) for i in eval(expr)))
+            new_lines.append(
+                "".join(block.replace(f"%{placeholder}%", str(i)) for i in eval(expr))
+            )
             new_lines += lines[end + 1 : next_start]
 
         self.source = "".join(new_lines).strip()
@@ -121,11 +126,32 @@ class Transformer:
                 self.consts[split[0][2:].strip()] = split[1].strip()
                 line = ""
             else:
-                start = line.index("%%")
-                end = start + 2
-                while line[end].isalpha():
-                    end += 1
-                line = line[:start] + self.consts[line[start + 2 : end]] + line[end:]
+                indices = [i for i in range(len(line)) if line.startswith("%%", i)]
+                offset = 0
+                for index in indices:
+                    start = index + offset
+                    end = start + 2
+                    while line[end].isalpha():
+                        end += 1
+                    replacement = self.consts[line[start + 2 : end]]
+                    line = line[:start] + replacement + line[end:]
+                    offset += len(replacement) - (end - start)
+        if "%=" in line:
+            if stripped_line.startswith("%=") and " = " in stripped_line:
+                split = stripped_line.split(" = ")
+                self.consts[split[0][2:].strip()] = str(eval(split[1].strip()))
+                line = ""
+            else:
+                indices = [i for i in range(len(line)) if line.startswith("%=", i)]
+                offset = 0
+                for index in indices:
+                    start = index + offset
+                    end = start + 2
+                    while line[end].isalpha():
+                        end += 1
+                    replacement = self.consts[line[start + 2 : end]]
+                    line = line[:start] + replacement + line[end:]
+                    offset += len(replacement) - (end - start)
 
         return line
 
@@ -591,10 +617,6 @@ def main():
 
             fo.write(line)
             line_index += 1
-
-    import subprocess
-
-    subprocess.run(["iverilog", "-tnull", sys.argv[2]])
 
 
 if __name__ == "__main__":
