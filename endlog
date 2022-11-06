@@ -19,13 +19,13 @@ class Module:
     io: dict[str, tuple[int, IOState]]
     wires: dict[str, int]
     registers: dict[str, int]
-    parameters: list[str]
+    parameters: dict[str, int]
 
     def __init__(self):
         self.io = {}
         self.wires = {}
         self.registers = {}
-        self.parameters = []
+        self.parameters = {}
 
     def add_io(self, name: str, width: int, state: IOState) -> None:
         self.io[name] = (width, state)
@@ -36,8 +36,8 @@ class Module:
     def add_register(self, name: str, width: int) -> None:
         self.registers[name] = width
 
-    def add_parameter(self, name: str) -> None:
-        self.parameters.append(name)
+    def add_parameter(self, name: str, width: int) -> None:
+        self.parameters[name] = width
 
 
 class Transformer:
@@ -424,16 +424,25 @@ class Transformer:
                 match stripped_line.split(" ")[0].split("#")[0]:
                     case "par":
                         assert self.current_module_name is not None
-                        self.modules[self.current_module_name].add_parameter(name)
+                        width = stripped_line.split(" ")[0].split("#")[1].strip()
+                        if width == "":
+                            raise Exception("Bitwidth must be a number")
+                        self.modules[self.current_module_name].add_parameter(
+                            name, int(width)
+                        )
                     case "reg":
                         assert self.current_module_name is not None
-                        width = stripped_line.split(" ")[0].split("#")[1]
+                        width = stripped_line.split(" ")[0].split("#")[1].strip()
+                        if width == "":
+                            raise Exception("Bitwidth must be a number")
                         self.modules[self.current_module_name].add_register(
                             name, int(width)
                         )
                     case "wire":
                         assert self.current_module_name is not None
-                        width = stripped_line.split(" ")[0].split("#")[1]
+                        width = stripped_line.split(" ")[0].split("#")[1].strip()
+                        if width == "":
+                            raise Exception("Bitwidth must be a number")
                         self.modules[self.current_module_name].add_wire(
                             name, int(width)
                         )
@@ -488,8 +497,8 @@ class Transformer:
                     end += 1
                 width = int(line[index + 1 : end])
                 line = f"{line[:index]} [{width - 1}:0]{line[end:]}"
-            elif line[index + 1] == " ":
-                line = line[:index] + line[index + 1 :]
+            else:
+                raise Exception("Bitwidth must be a number")
 
         return line
 

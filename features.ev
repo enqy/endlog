@@ -1,12 +1,12 @@
 %%cores = ["A", "B", "C"]
-%=long = "a" * 10000
+%=long = __import__("random").randint(1, 100)
 
 %-=i
 module core%i%(
     #1 clk,
     #1 led%=long,
 ) {
-    par div%=long = 12500
+    par#32 div%=long = 12500
     reg#32 count%=long = 0
     reg#1 toggle%=long = '0
 
