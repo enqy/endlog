@@ -2,10 +2,11 @@
 from enum import Enum
 import sys
 from functools import reduce
+from typing import Literal
 
 
 class IOState(Enum):
-    Input = (0,)
+    Input = 0
     Output = 1
 
     def is_input(self):
@@ -19,7 +20,7 @@ class Module:
     io: dict[str, tuple[int, IOState]]
     wires: dict[str, int]
     registers: dict[str, int]
-    parameters: dict[str, int]
+    parameters: dict[str, str]
 
     def __init__(self):
         self.io = {}
@@ -36,8 +37,8 @@ class Module:
     def add_register(self, name: str, width: int) -> None:
         self.registers[name] = width
 
-    def add_parameter(self, name: str, width: int) -> None:
-        self.parameters[name] = width
+    def add_parameter(self, name: str, type: str) -> None:
+        self.parameters[name] = type
 
 
 class Transformer:
@@ -185,7 +186,7 @@ class Transformer:
                     self.transform_block,
                     self.transform_concat,
                     self.transform_assignments,
-                    self.transform_bitwidth,
+                    self.transform_type,
                     self.transform_on,
                     self.transform_macros,
                 ],
@@ -265,6 +266,7 @@ class Transformer:
                 raise Exception(f"`{name}` collides with an already existing name")
 
             state = self.lookahead_detect_io_state(name)
+            print(f"Detected `{name}` as {state} in module definition")
             state_str = "output" if state.is_output() else "input"
 
             whitespace = self.extract_whitespace(line)
@@ -424,12 +426,10 @@ class Transformer:
                 match stripped_line.split(" ")[0].split("#")[0]:
                     case "par":
                         assert self.current_module_name is not None
-                        width = stripped_line.split(" ")[0].split("#")[1].strip()
-                        if width == "":
-                            raise Exception("Bitwidth must be a number")
-                        self.modules[self.current_module_name].add_parameter(
-                            name, int(width)
-                        )
+                        type = stripped_line.split(" ")[0].split("#")[1].strip()
+                        if type == "":
+                            raise Exception("No type specified for parameter")
+                        self.modules[self.current_module_name].add_parameter(name, type)
                     case "reg":
                         assert self.current_module_name is not None
                         width = stripped_line.split(" ")[0].split("#")[1].strip()
@@ -488,7 +488,7 @@ class Transformer:
 
         return line
 
-    def transform_bitwidth(self, line: str, _: str) -> str:
+    def transform_type(self, line: str, _: str) -> str:
         if "#" in line:
             index = line.index("#")
             if line[index + 1] in "0123456789":
@@ -497,8 +497,14 @@ class Transformer:
                     end += 1
                 width = int(line[index + 1 : end])
                 line = f"{line[:index]} [{width - 1}:0]{line[end:]}"
+            elif line[index + 1] != " ":
+                end = index + 1
+                while line[end] != " ":
+                    end += 1
+                type = line[index + 1 : end]
+                line = f"{line[:index]} {type}{line[end:]}"
             else:
-                raise Exception("Bitwidth must be a number")
+                raise Exception("No type specified")
 
         return line
 
@@ -566,6 +572,7 @@ class Transformer:
             if self.source.startswith(f" {io_name} ::=", i)
             or self.source.startswith(f"\n{io_name} ::=", i)
         ]
+        print(f"found {io_name} at {indices}")
         limit = (
             len(self.source)
             if len(
@@ -582,7 +589,9 @@ class Transformer:
             (IOState.Output for index in indices if index < limit), IOState.Input
         )
 
-    def check_name_collision(self, name: str) -> tuple[str, int] | None:
+    def check_name_collision(
+        self, name: str
+    ) -> tuple[Literal["const", "module", "wire", "reg"], int] | None:
         # check const names
         if name in self.consts:
             return ("const", 0)

@@ -6,12 +6,12 @@ module core%i%(
     #1 clk,
     #1 led%=long,
 ) {
-    par#32 div%=long = 12500
+    par#int DIV%=long = 12500
     reg#32 count%=long = 0
     reg#1 toggle%=long = '0
 
     on (clk@posedge) {
-        if (count%=long == div%=long - 1) {
+        if (count%=long == DIV%=long - 1) {
             toggle%=long <- !toggle%=long
             0 -> count%=long
         } else {
